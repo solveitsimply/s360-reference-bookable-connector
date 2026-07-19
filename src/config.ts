@@ -32,16 +32,23 @@ export const loadCredentials = async (
   const secretArn = env.S360_SECRET_ARN;
   if (!secretArn) return null;
 
-  // Dynamic import keeps @aws-sdk out of unit tests and the local build.
-  const { SecretsManagerClient, GetSecretValueCommand } = await import('@aws-sdk/client-secrets-manager');
-  const client = new SecretsManagerClient({});
-  const response = await client.send(new GetSecretValueCommand({ SecretId: secretArn }));
-  if (!response.SecretString) return null;
-  const parsed = JSON.parse(response.SecretString) as Partial<ConnectorCredentials>;
-  if (!parsed.clientId || !parsed.clientSecret) return null;
-  // A placeholder secret (clientId === 'TODO') is treated as "not yet seeded".
-  if (parsed.clientId === 'TODO' || parsed.clientSecret === 'TODO') return null;
-  return { clientId: parsed.clientId, clientSecret: parsed.clientSecret };
+  try {
+    // Dynamic import keeps @aws-sdk out of unit tests and the local build.
+    const { SecretsManagerClient, GetSecretValueCommand } = await import('@aws-sdk/client-secrets-manager');
+    const client = new SecretsManagerClient({});
+    const response = await client.send(new GetSecretValueCommand({ SecretId: secretArn }));
+    if (!response.SecretString) return null;
+    const parsed = JSON.parse(response.SecretString) as Partial<ConnectorCredentials>;
+    if (!parsed.clientId || !parsed.clientSecret) return null;
+    // A placeholder secret (clientId === 'TODO') is treated as "not yet seeded".
+    if (parsed.clientId === 'TODO' || parsed.clientSecret === 'TODO') return null;
+    return { clientId: parsed.clientId, clientSecret: parsed.clientSecret };
+  } catch (error) {
+    // A missing/unreadable/not-yet-seeded secret means "not configured", not a
+    // crash. /health must stay green so it can prove the deploy path.
+    console.warn(`Secret read failed (treating as not configured): ${String(error)}`);
+    return null;
+  }
 };
 
 /** Build a full ConnectorConfig, or null when base URL / credentials are absent. */

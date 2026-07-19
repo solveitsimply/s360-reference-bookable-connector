@@ -79,11 +79,25 @@ Required repository **variables**:
 | `S360_SECRET_ARN` | ARN of `s360/ref-bookable-connector/client` |
 | `S360_API_BASE_URL` | Simply360 origin (optional until live conformance) |
 
-The OIDC trust is restricted to
-`repo:solveitsimply/s360-reference-bookable-connector:ref:refs/heads/main`.
+The OIDC trust is restricted to this repo's `refs/heads/main` (the org issues
+GitHub's **immutable** subject claim, so the trust pins the immutable
+`repo:<org>@<orgId>/<repo>@<repoId>:ref:refs/heads/main` sub).
 
-`GET /health` proves the deploy path with no credentials. `POST /run` requires a
-seeded grant (see below) and returns a clear `not_configured` state until then.
+The Function URL uses **`AWS_IAM`** auth: the NonProd account guardrail blocks
+unauthenticated (`NONE`) Function URLs. Invoke `/health` with a SigV4-signed
+request:
+
+```bash
+URL=$(aws lambda get-function-url-config --function-name s360-ref-bookable-connector --query FunctionUrl --output text)
+curl -fsS "${URL}health" \
+  --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+  --aws-sigv4 "aws:amz:us-east-1:lambda" \
+  -H "x-amz-security-token: $AWS_SESSION_TOKEN"
+```
+
+`GET /health` proves the deploy path (no connector credentials needed). `POST /run`
+requires a seeded grant (see below) and returns a clear `not_configured` state
+until then.
 
 ## npm-publication pause point (DEFERRED)
 

@@ -95,37 +95,34 @@ jobs:
             aws lambda wait function-active --function-name "$FUNCTION_NAME"
           fi
 
-      - name: Ensure Function URL
+      - name: Ensure Function URL (IAM auth)
+        # The NonProd account guardrail blocks unauthenticated (NONE) Function
+        # URLs, so the URL uses AWS_IAM auth. Invoke /health with a SigV4-signed
+        # request (see README).
         run: |
           set -euo pipefail
           if aws lambda get-function-url-config --function-name "$FUNCTION_NAME" >/dev/null 2>&1; then
             aws lambda update-function-url-config \
               --function-name "$FUNCTION_NAME" \
-              --auth-type NONE >/dev/null
+              --auth-type AWS_IAM >/dev/null
           else
             aws lambda create-function-url-config \
               --function-name "$FUNCTION_NAME" \
-              --auth-type NONE >/dev/null
-            aws lambda add-permission \
-              --function-name "$FUNCTION_NAME" \
-              --statement-id FunctionURLAllowPublicAccess \
-              --action lambda:InvokeFunctionUrl \
-              --principal '*' \
-              --function-url-auth-type NONE >/dev/null
+              --auth-type AWS_IAM >/dev/null
           fi
           URL=$(aws lambda get-function-url-config --function-name "$FUNCTION_NAME" --query FunctionUrl --output text)
           echo "Function URL: $URL"
           echo "## Reference connector deployed" >> "$GITHUB_STEP_SUMMARY"
-          echo "Function URL: $URL" >> "$GITHUB_STEP_SUMMARY"
+          echo "Function URL (AWS_IAM auth): $URL" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Probe /health
+      - name: Probe /health (SigV4)
         run: |
           set -euo pipefail
           URL=$(aws lambda get-function-url-config --function-name "$FUNCTION_NAME" --query FunctionUrl --output text)
-          for i in 1 2 3 4 5; do
-            if curl -fsS "${URL}health" -o health.json; then
-              cat health.json
-              break
-            fi
-            echo "health attempt $i failed, retrying..."; sleep 5
-          done
+          HOST=$(echo "$URL" | sed -E 's#https://([^/]+)/#\1#')
+          curl -fsS "${URL}health" \
+            --user "$AWS_ACCESS_KEY_ID:$AWS_SECRET_ACCESS_KEY" \
+            --aws-sigv4 "aws:amz:${AWS_REGION}:lambda" \
+            -H "x-amz-security-token: $AWS_SESSION_TOKEN" \
+            -o health.json
+          cat health.json

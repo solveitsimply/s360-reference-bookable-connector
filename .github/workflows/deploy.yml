@@ -1,0 +1,131 @@
+name: deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+# OIDC: no long-lived AWS keys. The role trust is restricted to
+# repo:solveitsimply/s360-reference-bookable-connector:ref:refs/heads/main.
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      FUNCTION_NAME: ${{ vars.FUNCTION_NAME }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install
+        run: npm ci
+
+      # Gate the deploy on the static no-internal-imports ratchet + unit tests.
+      - name: Ratchet (no internal imports)
+        run: npm run ratchet
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Type-check
+        run: npm run typecheck
+
+      - name: Bundle handler
+        run: npm run build
+
+      - name: Package zip
+        run: |
+          cd dist
+          zip -j ../function.zip handler.mjs
+          cd ..
+          ls -la function.zip
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy Lambda (create or update)
+        env:
+          EXEC_ROLE_ARN: ${{ vars.LAMBDA_EXEC_ROLE_ARN }}
+          SECRET_ARN: ${{ vars.S360_SECRET_ARN }}
+          API_BASE_URL: ${{ vars.S360_API_BASE_URL }}
+        run: |
+          set -euo pipefail
+          ENV_VARS="S360_SECRET_ARN=${SECRET_ARN},S360_SCOPE=records:write"
+          if [ -n "${API_BASE_URL:-}" ]; then
+            ENV_VARS="${ENV_VARS},S360_API_BASE_URL=${API_BASE_URL}"
+          fi
+          if aws lambda get-function --function-name "$FUNCTION_NAME" >/dev/null 2>&1; then
+            echo "Updating existing function code + config"
+            aws lambda update-function-code \
+              --function-name "$FUNCTION_NAME" \
+              --zip-file fileb://function.zip >/dev/null
+            aws lambda wait function-updated --function-name "$FUNCTION_NAME"
+            aws lambda update-function-configuration \
+              --function-name "$FUNCTION_NAME" \
+              --runtime nodejs22.x \
+              --handler handler.handler \
+              --timeout 30 \
+              --memory-size 256 \
+              --environment "Variables={${ENV_VARS}}" >/dev/null
+          else
+            echo "Creating new function"
+            aws lambda create-function \
+              --function-name "$FUNCTION_NAME" \
+              --runtime nodejs22.x \
+              --handler handler.handler \
+              --role "$EXEC_ROLE_ARN" \
+              --zip-file fileb://function.zip \
+              --timeout 30 \
+              --memory-size 256 \
+              --environment "Variables={${ENV_VARS}}" >/dev/null
+            aws lambda wait function-active --function-name "$FUNCTION_NAME"
+          fi
+
+      - name: Ensure Function URL
+        run: |
+          set -euo pipefail
+          if aws lambda get-function-url-config --function-name "$FUNCTION_NAME" >/dev/null 2>&1; then
+            aws lambda update-function-url-config \
+              --function-name "$FUNCTION_NAME" \
+              --auth-type NONE >/dev/null
+          else
+            aws lambda create-function-url-config \
+              --function-name "$FUNCTION_NAME" \
+              --auth-type NONE >/dev/null
+            aws lambda add-permission \
+              --function-name "$FUNCTION_NAME" \
+              --statement-id FunctionURLAllowPublicAccess \
+              --action lambda:InvokeFunctionUrl \
+              --principal '*' \
+              --function-url-auth-type NONE >/dev/null
+          fi
+          URL=$(aws lambda get-function-url-config --function-name "$FUNCTION_NAME" --query FunctionUrl --output text)
+          echo "Function URL: $URL"
+          echo "## Reference connector deployed" >> "$GITHUB_STEP_SUMMARY"
+          echo "Function URL: $URL" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Probe /health
+        run: |
+          set -euo pipefail
+          URL=$(aws lambda get-function-url-config --function-name "$FUNCTION_NAME" --query FunctionUrl --output text)
+          for i in 1 2 3 4 5; do
+            if curl -fsS "${URL}health" -o health.json; then
+              cat health.json
+              break
+            fi
+            echo "health attempt $i failed, retrying..."; sleep 5
+          done

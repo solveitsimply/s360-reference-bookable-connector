@@ -1,0 +1,30 @@
+{
+  "name": "s360-reference-bookable-connector",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Out-of-process reference BOOKABLE_OUTCOME_SOURCE connector for Simply360 conformance (synthetic fixtures only)",
+  "type": "module",
+  "license": "UNLICENSED",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "ratchet": "vitest run test/no-internal-imports.test.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "build": "node scripts/build.mjs",
+    "refresh-contracts": "node scripts/refresh-contracts.mjs"
+  },
+  "dependencies": {
+    "@s360/contracts": "file:vendor/s360-contracts-4.3.1.tgz",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@aws-sdk/client-secrets-manager": "^3.699.0",
+    "@types/aws-lambda": "^8.10.146",
+    "@types/node": "^22.10.1",
+    "esbuild": "^0.24.2",
+    "typescript": "~5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
